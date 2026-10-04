@@ -1,0 +1,81 @@
+name: Build Moldova OS
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    container:
+      image: debian:trixie
+      options: --privileged
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install build tools
+        run: |
+          apt-get update
+          apt-get install -y live-build ca-certificates
+
+      - name: Configure Moldova OS
+        run: |
+          mkdir moldova-os && cd moldova-os
+          lb config \
+            --distribution trixie \
+            --archive-areas "main contrib non-free non-free-firmware" \
+            --binary-images iso-hybrid \
+            --image-name moldova-os \
+            --iso-volume "Moldova OS" \
+            --iso-application "Moldova OS" \
+            --iso-publisher "Moldova OS" \
+            --bootappend-live "boot=live components hostname=moldova-os username=user"
+
+          mkdir -p config/package-lists config/hooks/normal
+
+          cat > config/package-lists/desktop.list.chroot <<'EOF'
+          task-xfce-desktop
+          firefox-esr
+          network-manager-gnome
+          firmware-linux
+          firmware-misc-nonfree
+          firmware-iwlwifi
+          firmware-realtek
+          firmware-atheros
+          firmware-brcm80211
+          calamares-settings-debian
+          EOF
+
+          cat > config/hooks/normal/0100-moldova-branding.hook.chroot <<'EOF'
+          #!/bin/sh
+          set -e
+          rm -f /etc/os-release
+          cat > /etc/os-release <<'OSR'
+          PRETTY_NAME="Moldova OS 1.0"
+          NAME="Moldova OS"
+          VERSION_ID="1.0"
+          VERSION="1.0"
+          ID=moldova-os
+          ID_LIKE=debian
+          HOME_URL="https://www.debian.org/"
+          OSR
+          echo 'Moldova OS 1.0 \n \l' > /etc/issue
+          echo 'Moldova OS 1.0' > /etc/issue.net
+          echo 'Welcome to Moldova OS' > /etc/motd
+          EOF
+          chmod +x config/hooks/normal/0100-moldova-branding.hook.chroot
+
+      - name: Build ISO
+        run: |
+          cd moldova-os
+          lb build
+          ls -lh *.iso
+
+      - name: Upload ISO
+        uses: actions/upload-artifact@v4
+        with:
+          name: moldova-os-iso
+          path: moldova-os/moldova-os-amd64.hybrid.iso
+          compression-level: 0
+          retention-days: 14
