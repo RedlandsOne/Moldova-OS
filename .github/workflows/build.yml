@@ -17,7 +17,7 @@ jobs:
       - name: Install build tools
         run: |
           apt-get update
-          apt-get install -y live-build ca-certificates
+          apt-get install -y live-build ca-certificates imagemagick fonts-dejavu-core
 
       - name: Configure Moldova OS
         run: |
@@ -30,14 +30,60 @@ jobs:
             --iso-volume "Moldova OS" \
             --iso-application "Moldova OS" \
             --iso-publisher "Moldova OS" \
-            --bootappend-live "boot=live components hostname=moldova-os username=user"
+            --bootappend-live "boot=live components quiet splash hostname=moldova-os username=user"
 
-          mkdir -p config/package-lists config/hooks/normal
+          mkdir -p config/package-lists config/hooks/normal moldova-assets \
+            config/includes.chroot/usr/share/moldova-os \
+            config/includes.chroot/usr/local/bin \
+            config/includes.chroot/etc/xdg/autostart \
+            config/includes.chroot/usr/share/lightdm/lightdm-gtk-greeter.conf.d
 
+          # ---------- Artwork ----------
+          IM=$(command -v magick || command -v convert)
+          FONT=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf
+          A=moldova-assets
+
+          # Desktop wallpaper
+          "$IM" -size 1920x1080 xc:'#0b2a5b' \
+            \( -size 640x14 xc:'#0046AE' -size 640x14 xc:'#FFD200' -size 640x14 xc:'#CC092F' +append \) \
+            -gravity south -composite \
+            -font "$FONT" -fill white -pointsize 140 -gravity center -annotate +0-30 'Moldova OS' \
+            -fill '#FFD200' -pointsize 40 -annotate +0+100 'Version 1.0' \
+            "$A/wallpaper.png"
+
+          # Boot menu background (title at top so the menu doesn't cover it)
+          "$IM" -size 1920x1080 xc:'#0b2a5b' \
+            \( -size 640x14 xc:'#0046AE' -size 640x14 xc:'#FFD200' -size 640x14 xc:'#CC092F' +append \) \
+            -gravity south -composite \
+            -font "$FONT" -fill white -pointsize 90 -gravity north -annotate +0+70 'Moldova OS' \
+            "$A/boot.png"
+          "$IM" -size 640x480 xc:'#0b2a5b' \
+            \( -size 214x8 xc:'#0046AE' -size 212x8 xc:'#FFD200' -size 214x8 xc:'#CC092F' +append \) \
+            -gravity south -composite \
+            -font "$FONT" -fill white -pointsize 40 -gravity north -annotate +0+24 'Moldova OS' \
+            "$A/splash640.png"
+
+          # Logo
+          "$IM" -size 256x256 xc:none \
+            \( -size 86x256 xc:'#0046AE' -size 84x256 xc:'#FFD200' -size 86x256 xc:'#CC092F' +append \) \
+            -composite -font "$FONT" -fill white -stroke '#0b2a5b' -strokewidth 4 \
+            -pointsize 180 -gravity center -annotate +0+0 'M' \
+            "$A/logo.png"
+          cat > "$A/logo.svg" <<'EOF'
+          <svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256"><rect width="86" height="256" fill="#0046AE"/><rect x="86" width="84" height="256" fill="#FFD200"/><rect x="170" width="86" height="256" fill="#CC092F"/><text x="128" y="190" font-family="DejaVu Sans" font-weight="bold" font-size="180" text-anchor="middle" fill="#ffffff" stroke="#0b2a5b" stroke-width="4">M</text></svg>
+          EOF
+
+          cp "$A/wallpaper.png" "$A/boot.png" "$A/logo.png" "$A/logo.svg" \
+            config/includes.chroot/usr/share/moldova-os/
+
+          # ---------- Software ----------
           cat > config/package-lists/desktop.list.chroot <<'EOF'
           task-xfce-desktop
           firefox-esr
           network-manager-gnome
+          x11-xserver-utils
+          plymouth
+          plymouth-themes
           firmware-linux
           firmware-misc-nonfree
           firmware-iwlwifi
@@ -47,11 +93,51 @@ jobs:
           calamares-settings-debian
           EOF
 
+          # ---------- Wallpaper on first login ----------
+          cat > config/includes.chroot/usr/local/bin/moldova-set-wallpaper <<'EOF'
+          #!/bin/sh
+          W=/usr/share/moldova-os/wallpaper.png
+          M="$HOME/.config/moldova-os/wallpaper-set"
+          [ -f "$M" ] && exit 0
+          sleep 4
+          for mon in $(xrandr --listmonitors 2>/dev/null | awk 'NR>1 {print $NF}'); do
+            for ws in 0 1 2 3; do
+              xfconf-query -c xfce4-desktop -p "/backdrop/screen0/monitor$mon/workspace$ws/last-image" -n -t string -s "$W"
+              xfconf-query -c xfce4-desktop -p "/backdrop/screen0/monitor$mon/workspace$ws/image-style" -n -t int -s 5
+            done
+          done
+          for p in $(xfconf-query -c xfce4-desktop -l 2>/dev/null | grep 'last-image$'); do
+            xfconf-query -c xfce4-desktop -p "$p" -s "$W"
+          done
+          mkdir -p "$(dirname "$M")" && touch "$M"
+          EOF
+          chmod +x config/includes.chroot/usr/local/bin/moldova-set-wallpaper
+
+          cat > config/includes.chroot/etc/xdg/autostart/moldova-wallpaper.desktop <<'EOF'
+          [Desktop Entry]
+          Type=Application
+          Name=Moldova OS wallpaper
+          Exec=/usr/local/bin/moldova-set-wallpaper
+          OnlyShowIn=XFCE;
+          NoDisplay=true
+          EOF
+
+          # ---------- Login screen ----------
+          cat > config/includes.chroot/usr/share/lightdm/lightdm-gtk-greeter.conf.d/99_moldova.conf <<'EOF'
+          [greeter]
+          background=/usr/share/moldova-os/wallpaper.png
+          EOF
+
+          # ---------- Branding inside the OS ----------
           cat > config/hooks/normal/0100-moldova-branding.hook.chroot <<'EOF'
           #!/bin/sh
           set -e
-          rm -f /etc/os-release
-          cat > /etc/os-release <<'OSR'
+          A=/usr/share/moldova-os
+          swap() { dpkg-divert --local --rename --divert "$1.debian" --add "$1"; cp "$2" "$1"; }
+
+          # System name (diverted so updates can't put "Debian" back)
+          dpkg-divert --local --rename --divert /usr/lib/os-release.debian --add /usr/lib/os-release
+          cat > /usr/lib/os-release <<'OSR'
           PRETTY_NAME="Moldova OS 1.0"
           NAME="Moldova OS"
           VERSION_ID="1.0"
@@ -60,11 +146,75 @@ jobs:
           ID_LIKE=debian
           HOME_URL="https://www.debian.org/"
           OSR
+          ln -sf ../usr/lib/os-release /etc/os-release
           echo 'Moldova OS 1.0 \n \l' > /etc/issue
           echo 'Moldova OS 1.0' > /etc/issue.net
           echo 'Welcome to Moldova OS' > /etc/motd
+
+          # Default wallpaper and installed-system GRUB background
+          update-alternatives --install /usr/share/images/desktop-base/desktop-background desktop-background $A/wallpaper.png 999 || true
+          update-alternatives --set desktop-background $A/wallpaper.png || true
+          update-alternatives --install /usr/share/images/desktop-base/desktop-grub.png desktop-grub $A/boot.png 999 || true
+          update-alternatives --set desktop-grub $A/boot.png || true
+
+          # Startup animation
+          swap /usr/share/plymouth/themes/spinner/watermark.png $A/logo.png
+          if [ -e /usr/share/plymouth/debian-logo.png ]; then
+            swap /usr/share/plymouth/debian-logo.png $A/logo.png
+          fi
+          plymouth-set-default-theme spinner
+          update-initramfs -u -k all
+
+          # Installer branding
+          for d in /etc/calamares/branding /usr/share/calamares/branding; do
+            if [ -d "$d/debian" ]; then
+              cp -a "$d/debian" "$d/moldova"
+              cd "$d/moldova"
+              sed -i -E \
+                -e 's/^( *)componentName:.*/\1componentName: moldova/' \
+                -e 's/^( *)(productName|shortProductName|bootloaderEntryName):.*/\1\2: "Moldova OS"/' \
+                -e 's/^( *)(versionedName|shortVersionedName):.*/\1\2: "Moldova OS 1.0"/' \
+                -e 's/^( *)(version|shortVersion):.*/\1\2: "1.0"/' \
+                branding.desc
+              sed -i -e 's/Debian GNU\/Linux/Moldova OS/g' -e 's/Debian/Moldova OS/g' branding.desc
+              for f in $(find . -name '*.png'); do
+                case "$f" in
+                  *slide*) cp $A/wallpaper.png "$f" ;;
+                  *) cp $A/logo.png "$f" ;;
+                esac
+              done
+              find . -name '*.svg' -exec cp $A/logo.svg {} \;
+              find . -name '*.qml' -exec sed -i 's/Debian/Moldova OS/g' {} +
+              cd /
+            fi
+          done
+          for f in /etc/calamares/settings.conf /usr/share/calamares/settings.conf; do
+            if [ -f "$f" ]; then sed -i -E 's/^branding:.*/branding: moldova/' "$f"; fi
+          done
+          for f in /usr/share/applications/*.desktop; do
+            if grep -qi calamares "$f"; then sed -i 's/Debian/Moldova OS/g' "$f"; fi
+          done
           EOF
           chmod +x config/hooks/normal/0100-moldova-branding.hook.chroot
+
+          # ---------- USB boot menu ----------
+          cat > config/hooks/normal/9000-moldova-bootmenu.hook.binary <<'EOF'
+          #!/bin/sh
+          set -e
+          if [ -d binary ]; then B=binary; R=.; else B=.; R=..; fi
+          A="$R/moldova-assets"
+          find "$B" -name splash.png | while read -r f; do
+            case "$f" in
+              *isolinux*|*syslinux*) cp "$A/splash640.png" "$f" ;;
+              *) cp "$A/boot.png" "$f" ;;
+            esac
+          done
+          find "$B" \( -name '*.cfg' -o -name 'theme.txt' \) -exec sed -i \
+            -e 's/Live system/Moldova OS Live/g' \
+            -e 's/Debian GNU\/Linux/Moldova OS/g' \
+            -e 's/Debian/Moldova OS/g' {} +
+          EOF
+          chmod +x config/hooks/normal/9000-moldova-bootmenu.hook.binary
 
       - name: Build ISO
         run: |
